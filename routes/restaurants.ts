@@ -2,7 +2,7 @@ import express, { type Request } from 'express';
 import { RestaurantSchema } from '../schemas/restaurant.js';
 import { validate } from '../middlewares/validate.js';
 import { initializeRedisClient } from '../utils/redisClient.js';
-import { cuisineKey, cuisinesKey, restaurantCuisinesKeyById, restaurantKeyById, restaurantsByRatingKey, reviewDetailsKeyById, reviewKeyById } from '../utils/redisKeys.js';
+import { cuisineKey, cuisinesKey, restaurantCuisinesKeyById, restaurantKeyById, restaurantsByRatingKey, reviewDetailsKeyById, reviewKeyById, weatherKeyByRestaurantId } from '../utils/redisKeys.js';
 import { nanoid } from 'nanoid';
 import { errorResponse, successResponse } from '../utils/responses.js';
 import { checkRestaurantExists } from '../middlewares/checkRestaurantId.js';
@@ -50,6 +50,35 @@ router.post("/", validate(RestaurantSchema), async (req, res, next) => {
     }
 
     res.send(`Received data: ${JSON.stringify(data)}`);
+});
+
+router.get("/:restaurantId/weather", checkRestaurantExists, async (req: Request<{ restaurantId: string }>, res, next) => {
+    const { restaurantId } = req.params;
+    try {
+        const client = await initializeRedisClient();
+        const weatherKey = weatherKeyByRestaurantId(restaurantId);
+        const cachedWeatherData = await client.get(weatherKey);
+        if(cachedWeatherData) {
+            return successResponse(res, JSON.parse(cachedWeatherData), "Fetched weather data from cache");
+        }
+
+        const restaurantKey = restaurantKeyById(restaurantId);
+        const coordinates = await client.hGet(restaurantKey, 'location');
+        if(!coordinates) {
+            return errorResponse(res, 404, `Coordinates not found for restaurant ${restaurantId}`);
+        }
+
+        const [lat, lon] = coordinates.split(',').map(Number);
+        const apiResponse = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`);
+        if(apiResponse.status === 200) {
+            const weatherData = await apiResponse.json();
+            await client.set(weatherKey, JSON.stringify(weatherData), { EX: 1800 }); // Cache for 30 minutes
+            return successResponse(res, weatherData, "Fetched weather data successfully");
+        }
+        return errorResponse(res, apiResponse.status, `Failed to fetch weather data: ${apiResponse.statusText}`);
+    } catch (error) {
+        next(error); // Pass the error to the error handling middleware
+    }
 });
 
 router.post("/:restaurantId/reviews", checkRestaurantExists, validate(ReviewSchema), async (req: Request<{restaurantId: string}>, res, next) => {
