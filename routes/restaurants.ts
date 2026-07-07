@@ -2,7 +2,7 @@ import express, { type Request } from 'express';
 import { RestaurantDetailsSchema, RestaurantSchema, type RestaurantDetails } from '../schemas/restaurant.js';
 import { validate } from '../middlewares/validate.js';
 import { initializeRedisClient } from '../utils/redisClient.js';
-import { cuisineKey, cuisinesKey, restaurantCuisinesKeyById, restaurantDetailsKeyById, restaurantIndexKey, restaurantKeyById, restaurantsByRatingKey, reviewDetailsKeyById, reviewKeyById, weatherKeyByRestaurantId } from '../utils/redisKeys.js';
+import { cuisineKey, cuisinesKey, restaurantBloomKey, restaurantCuisinesKeyById, restaurantDetailsKeyById, restaurantIndexKey, restaurantKeyById, restaurantsByRatingKey, reviewDetailsKeyById, reviewKeyById, weatherKeyByRestaurantId } from '../utils/redisKeys.js';
 import { nanoid } from 'nanoid';
 import { errorResponse, successResponse } from '../utils/responses.js';
 import { checkRestaurantExists } from '../middlewares/checkRestaurantId.js';
@@ -32,6 +32,12 @@ router.post("/", validate(RestaurantSchema), async (req, res, next) => {
         const client = await initializeRedisClient();
         const id = nanoid(); // Generate a unique ID for the restaurant
         const restaurantKey = restaurantKeyById(id);
+        const bloomString = `${data.name}:${data.location}`;
+        const seen = await client.bf.exists(restaurantBloomKey, bloomString);
+        if(seen) {
+            return errorResponse(res, 409, "Restaurant already exists");
+        }
+
         const hashData = {
             id, name: data.name, location: data.location 
         };
@@ -42,7 +48,8 @@ router.post("/", validate(RestaurantSchema), async (req, res, next) => {
                 client.sAdd(restaurantCuisinesKeyById(id), cuisine) // Add cuisine to the restaurant's cuisines set
             ])),
             client.hSet(restaurantKey, hashData),
-            client.zAdd(restaurantsByRatingKey, { score: 0, value: id }) // Add restaurant ID to the sorted set with an initial score of 0
+            client.zAdd(restaurantsByRatingKey, { score: 0, value: id }), // Add restaurant ID to the sorted set with an initial score of 0
+            client.bf.add(restaurantBloomKey, bloomString) // Add the restaurant to the Bloom filter
         ]);
         return successResponse(res, hashData, "Added new restaurant successfully");
     } catch (error) {
