@@ -2,7 +2,7 @@ import express, { type Request } from 'express';
 import { RestaurantDetailsSchema, RestaurantSchema, type RestaurantDetails } from '../schemas/restaurant.js';
 import { validate } from '../middlewares/validate.js';
 import { initializeRedisClient } from '../utils/redisClient.js';
-import { cuisineKey, cuisinesKey, restaurantCuisinesKeyById, restaurantDetailsKeyById, restaurantKeyById, restaurantsByRatingKey, reviewDetailsKeyById, reviewKeyById, weatherKeyByRestaurantId } from '../utils/redisKeys.js';
+import { cuisineKey, cuisinesKey, restaurantCuisinesKeyById, restaurantDetailsKeyById, restaurantIndexKey, restaurantKeyById, restaurantsByRatingKey, reviewDetailsKeyById, reviewKeyById, weatherKeyByRestaurantId } from '../utils/redisKeys.js';
 import { nanoid } from 'nanoid';
 import { errorResponse, successResponse } from '../utils/responses.js';
 import { checkRestaurantExists } from '../middlewares/checkRestaurantId.js';
@@ -50,6 +50,17 @@ router.post("/", validate(RestaurantSchema), async (req, res, next) => {
     }
 
     res.send(`Received data: ${JSON.stringify(data)}`);
+});
+
+router.get("/search", async (req, res, next) => {
+    const { q } = req.query;
+    try {
+        const client = await initializeRedisClient();
+        const results = await client.ft.search(restaurantIndexKey, `@name:${q}*`);
+        return successResponse(res, results, "Fetched search results successfully");
+    } catch (error) {
+        next(error); // Pass the error to the error handling middleware
+    }
 });
 
 router.post("/:restaurantId/details", checkRestaurantExists, validate(RestaurantDetailsSchema), async (req: Request<{ restaurantId: string }>, res, next) => {
