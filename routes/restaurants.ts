@@ -2,7 +2,7 @@ import express, { type Request } from 'express';
 import { RestaurantSchema } from '../schemas/restaurant.js';
 import { validate } from '../middlewares/validate.js';
 import { initializeRedisClient } from '../utils/redisClient.js';
-import { restaurantKeyById, reviewDetailsKeyById, reviewKeyById } from '../utils/redisKeys.js';
+import { cuisineKey, cuisinesKey, restaurantCuisinesKeyById, restaurantKeyById, reviewDetailsKeyById, reviewKeyById } from '../utils/redisKeys.js';
 import { nanoid } from 'nanoid';
 import { errorResponse, successResponse } from '../utils/responses.js';
 import { checkRestaurantExists } from '../middlewares/checkRestaurantId.js';
@@ -18,8 +18,14 @@ router.post("/", validate(RestaurantSchema), async (req, res, next) => {
         const hashData = {
             id, name: data.name, location: data.location 
         };
-        const addResult = await client.hSet(restaurantKey, hashData);
-        console.log(`Added restaurant with ID ${id}:`, addResult);
+        await Promise.all([
+            ...data.cuisines.map((cuisine) => Promise.all([
+                client.sAdd(cuisinesKey, cuisine), // Add cuisine to the global cuisines set
+                client.sAdd(cuisineKey(cuisine), id), // Add restaurant ID to the cuisine's set
+                client.sAdd(restaurantCuisinesKeyById(id), cuisine) // Add cuisine to the restaurant's cuisines set
+            ])),
+            client.hSet(restaurantKey, hashData)
+        ]);
         return successResponse(res, hashData, "Added new restaurant successfully");
     } catch (error) {
         next(error); // Pass the error to the error handling middleware
@@ -93,11 +99,12 @@ router.get("/:restaurantId", checkRestaurantExists, async (req: Request<{ restau
     try {
         const client = await initializeRedisClient();
         const restaurantKey = restaurantKeyById(restaurantId);
-        const [viewCount, restaurantData] = await Promise.all([
+        const [viewCount, restaurantData, restaurantCuisines] = await Promise.all([
             client.hIncrBy(restaurantKey, 'viewCount', 1), 
-            client.hGetAll(restaurantKey)
+            client.hGetAll(restaurantKey),
+            client.sMembers(restaurantCuisinesKeyById(restaurantId))
         ]);
-        return successResponse(res, restaurantData, "Fetched restaurant successfully");
+        return successResponse(res, { ...restaurantData, cuisines: restaurantCuisines }, "Fetched restaurant successfully");
     } catch (error) {
         next(error); // Pass the error to the error handling middleware
     }
