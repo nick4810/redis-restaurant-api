@@ -2,12 +2,29 @@ import express, { type Request } from 'express';
 import { RestaurantSchema } from '../schemas/restaurant.js';
 import { validate } from '../middlewares/validate.js';
 import { initializeRedisClient } from '../utils/redisClient.js';
-import { cuisineKey, cuisinesKey, restaurantCuisinesKeyById, restaurantKeyById, reviewDetailsKeyById, reviewKeyById } from '../utils/redisKeys.js';
+import { cuisineKey, cuisinesKey, restaurantCuisinesKeyById, restaurantKeyById, restaurantsByRatingKey, reviewDetailsKeyById, reviewKeyById } from '../utils/redisKeys.js';
 import { nanoid } from 'nanoid';
 import { errorResponse, successResponse } from '../utils/responses.js';
 import { checkRestaurantExists } from '../middlewares/checkRestaurantId.js';
 import { ReviewSchema, type Review } from '../schemas/review.js';
 const router = express.Router();
+
+router.get("/", async (req, res, next) => {
+    const { page = 1, limit = 10 } = req.query;
+    const start = (Number(page) - 1) * Number(limit);
+    const end = start + Number(limit) - 1;
+
+    try { 
+        const client = await initializeRedisClient();
+        const restaurantIds = await client.zRange(restaurantsByRatingKey, start, end, { REV: true });
+        const restaurants = await Promise.all(
+            restaurantIds.map((id => client.hGetAll(restaurantKeyById(id)))
+        ));
+        return successResponse(res, restaurants, "Fetched restaurants successfully");
+    } catch (error) {
+        next(error); // Pass the error to the error handling middleware
+    }
+});
 
 router.post("/", validate(RestaurantSchema), async (req, res, next) => {
     const data = req.body;
@@ -24,7 +41,8 @@ router.post("/", validate(RestaurantSchema), async (req, res, next) => {
                 client.sAdd(cuisineKey(cuisine), id), // Add restaurant ID to the cuisine's set
                 client.sAdd(restaurantCuisinesKeyById(id), cuisine) // Add cuisine to the restaurant's cuisines set
             ])),
-            client.hSet(restaurantKey, hashData)
+            client.hSet(restaurantKey, hashData),
+            client.zAdd(restaurantsByRatingKey, { score: 0, value: id }) // Add restaurant ID to the sorted set with an initial score of 0
         ]);
         return successResponse(res, hashData, "Added new restaurant successfully");
     } catch (error) {
@@ -42,15 +60,23 @@ router.post("/:restaurantId/reviews", checkRestaurantExists, validate(ReviewSche
         const reviewId = nanoid();
         const reviewKey = reviewKeyById(restaurantId);
         const reviewDetailsKey = reviewDetailsKeyById(reviewId);
+        const restaurantKey = restaurantKeyById(restaurantId);
         const reviewData = {
             id: reviewId,
             ...data,
             timestamp: Date.now(),
             restaurantId,
         };
-        await Promise.all([
+        const [reviewCount, setResult, totalRating] = await Promise.all([
             client.lPush(reviewKey, reviewId), // Store the review ID in the restaurant's review list
-            client.hSet(reviewDetailsKey, reviewData) // Store the review details in a hash,
+            client.hSet(reviewDetailsKey, reviewData), // Store the review details in a hash,
+            client.hIncrByFloat(restaurantKey, "totalRating", data.rating), // Increment the total rating for the restaurant
+        ]);
+
+        const averageRating = Number((totalRating / reviewCount).toFixed(1));
+        await Promise.all([
+            client.zAdd(restaurantsByRatingKey, { score: averageRating, value: restaurantId }), // Update the restaurant's score in the sorted set
+            client.hSet(restaurantKey, "averageRating", averageRating.toString()), // Update the average rating in the restaurant's hash
         ]);
         return successResponse(res, reviewData, "Added new review successfully");
     } catch (error) {
