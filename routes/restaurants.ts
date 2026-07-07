@@ -1,8 +1,8 @@
 import express, { type Request } from 'express';
-import { RestaurantSchema } from '../schemas/restaurant.js';
+import { RestaurantDetailsSchema, RestaurantSchema, type RestaurantDetails } from '../schemas/restaurant.js';
 import { validate } from '../middlewares/validate.js';
 import { initializeRedisClient } from '../utils/redisClient.js';
-import { cuisineKey, cuisinesKey, restaurantCuisinesKeyById, restaurantKeyById, restaurantsByRatingKey, reviewDetailsKeyById, reviewKeyById, weatherKeyByRestaurantId } from '../utils/redisKeys.js';
+import { cuisineKey, cuisinesKey, restaurantCuisinesKeyById, restaurantDetailsKeyById, restaurantKeyById, restaurantsByRatingKey, reviewDetailsKeyById, reviewKeyById, weatherKeyByRestaurantId } from '../utils/redisKeys.js';
 import { nanoid } from 'nanoid';
 import { errorResponse, successResponse } from '../utils/responses.js';
 import { checkRestaurantExists } from '../middlewares/checkRestaurantId.js';
@@ -36,7 +36,7 @@ router.post("/", validate(RestaurantSchema), async (req, res, next) => {
             id, name: data.name, location: data.location 
         };
         await Promise.all([
-            ...data.cuisines.map((cuisine) => Promise.all([
+            ...data.cuisines.map((cuisine: string) => Promise.all([
                 client.sAdd(cuisinesKey, cuisine), // Add cuisine to the global cuisines set
                 client.sAdd(cuisineKey(cuisine), id), // Add restaurant ID to the cuisine's set
                 client.sAdd(restaurantCuisinesKeyById(id), cuisine) // Add cuisine to the restaurant's cuisines set
@@ -51,6 +51,32 @@ router.post("/", validate(RestaurantSchema), async (req, res, next) => {
 
     res.send(`Received data: ${JSON.stringify(data)}`);
 });
+
+router.post("/:restaurantId/details", checkRestaurantExists, validate(RestaurantDetailsSchema), async (req: Request<{ restaurantId: string }>, res, next) => {
+    const { restaurantId } = req.params;
+    const data = req.body as RestaurantDetails;
+    try {
+        const client = await initializeRedisClient();
+        const restaurantDetailsKey = restaurantDetailsKeyById(restaurantId);
+        await client.json.set(restaurantDetailsKey, ".", data);
+        return successResponse(res, {}, "Added restaurant details successfully");
+    } catch (error) {
+        next(error); // Pass the error to the error handling middleware
+    }
+});
+
+router.get("/:restaurantId/details", checkRestaurantExists, async (req: Request<{ restaurantId: string }>, res, next) => {
+    const { restaurantId } = req.params;
+    try {
+        const client = await initializeRedisClient();
+        const restaurantDetailsKey = restaurantDetailsKeyById(restaurantId);
+        const data = await client.json.get(restaurantDetailsKey);
+        return successResponse(res, data, "Fetched restaurant details successfully");
+    } catch (error) {
+        next(error); // Pass the error to the error handling middleware
+    }
+});
+
 
 router.get("/:restaurantId/weather", checkRestaurantExists, async (req: Request<{ restaurantId: string }>, res, next) => {
     const { restaurantId } = req.params;
